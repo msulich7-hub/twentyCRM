@@ -23,6 +23,10 @@ Rozbicie pracy na zadania. Statusy: `[ ]` todo, `[~]` w toku, `[x]` zrobione.
   + rejestracja w `build-standard-flat-view-metadata-maps.util.ts`.
 - [ ] **T1.7** (jeśli wymagane) builder indeksów dla `ownerId` i `searchVector`.
 
+### Backend — zespół projektu (owner + members)
+- [ ] **T1.7b** `ProjectMemberWorkspaceEntity` (mostek `project` ↔ `member` → WorkspaceMember)
+  + metadane pól i relacji (Project.members ONE_TO_MANY, WorkspaceMember strona odwrotna).
+
 ### Backend — powiązanie Task ↔ Project
 - [ ] **T1.8** Dodać do `TaskWorkspaceEntity` pola `project` (MANY_TO_ONE) + `projectId`.
 - [ ] **T1.9** Dodać metadane relacji w buildery pól Taska + odpowiednie

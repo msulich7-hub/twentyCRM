@@ -81,6 +81,7 @@ automatycznie w nawigacji, listach, Kanbanie i kartach rekordu.
 | `startDate` | DATE_TIME | data startu |
 | `dueDate` | DATE_TIME | termin |
 | `owner` | RELATION (MANY_TO_ONE → WorkspaceMember) | właściciel projektu |
+| `members` | RELATION (wiele-do-wielu → WorkspaceMember) | zespół projektu (decyzja produktowa) |
 | `position` | POSITION | kolejność |
 | `tasks` | RELATION (ONE_TO_MANY → Task) | zadania w projekcie |
 | `projectTargets` | RELATION (ONE_TO_MANY → ProjectTarget) | powiązani klienci (opcjonalne) |
@@ -103,6 +104,7 @@ Wzorowany 1:1 na `TaskTarget`: `project`, `targetPerson`, `targetCompany`,
 
 **Faza 1 (MVP — rekomendowana na start):**
 - Obiekt `Project` z polami: name, bodyV2, status, startDate, dueDate, owner, position.
+- Zespół projektu: encja-mostek `ProjectMember` (project ↔ WorkspaceMember).
 - Relacja `Task.project` ↔ `Project.tasks`.
 - Domyślne widoki: lista „All Projects" + Kanban po `status`.
 - Wyszukiwanie + searchVector.
@@ -121,8 +123,12 @@ Wzorowany 1:1 na `TaskTarget`: `project`, `targetPerson`, `targetCompany`,
   czy wystarczy sync standardowej aplikacji. Do potwierdzenia testem na czystej bazie.
 - **UUID-y:** muszą być globalnie unikalne i niezmienne — generujemy raz.
 - **Nazewnictwo i kolory statusów** — do akceptacji produktowej.
-- **Czy `owner` to pojedynczy member, czy `members` (wielu)** — MVP: pojedynczy owner;
-  współdzielenie i tak realizujemy przez assignee zadań.
+- **Owner + członkowie (decyzja podjęta):** projekt ma pojedynczego `owner`
+  (MANY_TO_ONE → WorkspaceMember) oraz zespół `members`. Uwaga techniczna: Twenty
+  natywnie wspiera relacje ONE_TO_MANY / MANY_TO_ONE — relacja wiele-do-wielu
+  `members ↔ WorkspaceMember` wymaga **encji-mostka** (np. `ProjectMember`
+  z `project` + `member`), analogicznie do wzorca *target*. Do uwzględnienia
+  w zadaniach implementacyjnych Fazy 1.
 
 ## 7. Walidacja / testy
 - `npx nx typecheck twenty-server` + `lint:diff-with-main`.
