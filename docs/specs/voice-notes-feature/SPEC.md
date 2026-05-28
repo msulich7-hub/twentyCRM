@@ -71,27 +71,36 @@ Potwierdzone w kodzie (`packages/twenty-server`, `packages/twenty-front`, `packa
 - **i18n + dostępność:** Lingui, etykiety ARIA dla nagrywania.
 - **Koszty/limity:** transkrypcja i tokeny agenta liczone w istniejącym billingu (`AiBillingService`).
 
-## 5. Model danych (proponowany)
+## 5. Model danych (DECYZJA: reuse istniejącego `Note` + audio `Attachment`)
 
-### Nowy obiekt `VoiceNote` (wzór: Note + call-recording)
+> Decyzja produktowa: **nie tworzymy osobnego obiektu VoiceNote.** Notatka głosowa to
+> istniejący obiekt **`Note`** (z jego powiązaniami `noteTargets`, body `bodyV2`,
+> timeline, attachmentami) wzbogacony o nagranie audio jako **`Attachment`** (FK
+> `targetNoteId`). Transkrypt trafia do `Note.bodyV2` (rich text/BlockNote).
+>
+> Zalety: zero nowego obiektu, notatka od razu przypina się **wszędzie** przez istniejący
+> `NoteTarget` (Person/Company/Opportunity/…), działają widoki, wyszukiwanie, timeline.
+
+### Wykorzystanie istniejących obiektów
+| Element | Gdzie | Uwagi |
+|------|------|-------|
+| Treść/transkrypt | `Note.bodyV2` (RICH_TEXT) | wynik transkrypcji wstawiany do body |
+| Tytuł | `Note.title` (TEXT) | auto z daty/kontekstu, edytowalny |
+| Powiązanie z klientem | `NoteTarget` (Person/Company/Opportunity) | bez zmian — działa „wszędzie" |
+| Nagranie audio | `Attachment` z `targetNoteId` | re-use uploadu plików |
+| Ślad zdarzenia | `TimelineActivity` | event „voice note transcribed" |
+
+### Minimalne rozszerzenie `Note` (potrzebne do śledzenia transkrypcji)
+Aby śledzić stan transkrypcji bez nowego obiektu, dodajemy do standardowego `Note`
+dwa **opcjonalne** pola (nowe universalIdentifiers, nieinwazyjne dla istniejących notatek):
 | Pole | Typ | Uwagi |
 |------|-----|-------|
-| `title` | TEXT | label identifier (auto z daty/kontekstu, edytowalny) |
-| `audioFile` | FILES | nagranie audio (1 plik) |
-| `transcript` | RICH_TEXT | wynik transkrypcji (markdown + blocknote) |
-| `transcriptionStatus` | SELECT | `PENDING`/`PROCESSING`/`COMPLETED`/`FAILED` |
-| `language` | TEXT | wykryty / wybrany język |
-| `durationMs` | NUMBER | długość nagrania |
-| `recordedBy` | RELATION (MANY_TO_ONE → WorkspaceMember) | autor |
-| `voiceNoteTargets` | RELATION (ONE_TO_MANY → VoiceNoteTarget) | polimorficzne powiązanie z klientem/rekordem |
-| `attachments` | RELATION | dodatkowe pliki |
-| `timelineActivities` | RELATION | log na timeline |
-| `createdBy`/`updatedBy` | ACTOR | audyt |
-| `searchVector` | TS_VECTOR | wyszukiwanie po title + transcript |
+| `transcriptionStatus` | SELECT (nullable) | `PENDING`/`PROCESSING`/`COMPLETED`/`FAILED`; puste dla zwykłych notatek |
+| `isVoiceNote` | BOOLEAN (default false) | odróżnia notatki głosowe od pisanych (filtrowanie/UI) |
 
-### `VoiceNoteTarget` (mostek — wzór `TaskTarget`/`NoteTarget`)
-`voiceNote`, `targetPerson`, `targetCompany`, `targetOpportunity`, (+ Task/Project/custom).
-Dzięki temu notatkę głosową można przypiąć **wszędzie**.
+> Alternatywa rozważana: trzymać status wyłącznie efemerycznie (w jobie + zdarzeniu
+> timeline) bez dodawania pól do `Note`. Minusy: brak trwałego statusu w UI/liście,
+> trudniejsze ponowienie transkrypcji. Rekomendacja: dodać 2 powyższe pola.
 
 ### `AiSuggestedAction` (faza 3 — propozycje agenta do akceptacji)
 | Pole | Typ | Uwagi |
@@ -109,21 +118,21 @@ bez nowego obiektu. Decyzja w fazie 3.)
 ## 6. Architektura przepływu
 
 ```
-[UI: nagraj/wgraj audio]  →  uploadFilesFieldFile  →  utwórz VoiceNote (PENDING) + powiąż target
-        │
+[UI: nagraj/wgraj audio]  →  uploadFilesFieldFile  →  utwórz Note (isVoiceNote=true,
+        │                       transcriptionStatus=PENDING) + Attachment(targetNoteId) + NoteTarget(klient)
         ▼
-[BullMQ job: transcribeVoiceNote]  →  pobierz audio ze storage
-        │                              →  TranscriptionService (driver: Whisper/AssemblyAI/Deepgram)
+[BullMQ job: transcribeNote]  →  pobierz audio ze storage
+        │                         →  TranscriptionService (driver: Whisper/AssemblyAI/Deepgram)
         ▼
-zapis transcript → VoiceNote (COMPLETED) → emit timeline event "Voice note transcribed"
+zapis transcript → Note.bodyV2, transcriptionStatus=COMPLETED → emit timeline event
         │
         ▼  (Faza 3 — opcjonalny trigger workflow)
-[Workflow: on VoiceNote.transcriptionStatus = COMPLETED]
+[Workflow: on Note.transcriptionStatus = COMPLETED && isVoiceNote]
         │   → akcja AI Agent (agent "voice-note-to-actions" + skill)
         │   → agent czyta transcript, generuje listę propozycji (NIE zapisuje od razu)
         ▼
-[UI: panel "Sugerowane akcje"] → użytkownik akceptuje/odrzuca
-        │   → na akceptację: wykonanie przez database_crud / akcje workflow
+[UI: panel "Sugerowane akcje"] → użytkownik akceptuje/odrzuca   (HUMAN-IN-THE-LOOP — wymagane)
+        │   → DOPIERO na akceptację: wykonanie przez database_crud / akcje workflow
         ▼
 utworzone taski / zmienione rekordy / nowe eventy + ślad na timeline
 ```
@@ -137,9 +146,10 @@ utworzone taski / zmienione rekordy / nowe eventy + ślad na timeline
 ## 8. Zakres / fazy
 
 **Faza 1 — Nagrywanie + przechowywanie (bez AI):**
-- Komponent nagrywania głosu (MediaRecorder) + upload audio jako `VoiceNote`/Attachment.
-- Obiekt `VoiceNote` + `VoiceNoteTarget`; przypinanie do dowolnego rekordu.
-- Odtwarzacz audio + miejsce na transkrypt; widoki listy.
+- Komponent nagrywania głosu (MediaRecorder) + upload audio jako `Attachment` (targetNoteId).
+- Utworzenie `Note` (isVoiceNote=true) + powiązanie `NoteTarget` z aktualnym rekordem.
+- Dodanie 2 pól do `Note` (`transcriptionStatus`, `isVoiceNote`).
+- Odtwarzacz audio na karcie notatki; body na transkrypt; filtr „voice notes".
 - Rozszerzyć dozwolone MIME o audio (`audio/webm`, `audio/m4a`, `audio/mpeg`, `audio/wav`).
 
 **Faza 2 — Transkrypcja:**
@@ -158,12 +168,13 @@ utworzone taski / zmienione rekordy / nowe eventy + ślad na timeline
 - Komendy głosowe („utwórz zadanie…"), nagrywanie z poziomu mobile.
 - Konfigurowalna retencja audio + zgody (compliance).
 
-## 9. Ryzyka / decyzje otwarte
-- **Nowy obiekt `VoiceNote` vs. reuse `Note` + audio Attachment** — rekomendacja: dedykowany
-  `VoiceNote` (czysty model, status transkrypcji, łatwa rozbudowa). Do akceptacji.
+## 9. Ryzyka / decyzje
+- **Model danych (ZDECYDOWANE):** reuse `Note` + audio `Attachment` (bez nowego obiektu);
+  dodajemy 2 opcjonalne pola do `Note`. Uwaga: zmiana standardowego `Note` wymaga
+  ostrożnych universalIdentifiers i nie może psuć istniejących notatek.
+- **Autonomia agenta (ZDECYDOWANE):** wyłącznie **propozycje + akceptacja człowieka**;
+  brak auto-mutacji danych. Wykonanie tylko po zatwierdzeniu w UI.
 - **Provider STT i koszty** — domyślnie OpenAI; potwierdzić budżet/limit.
-- **Poziom autonomii agenta** — domyślnie human-in-the-loop; pełne auto-wykonanie tylko
-  opcjonalnie i per-workspace.
 - **Retencja i zgody na nagrania** — wymóg prawny zależny od rynku.
 - **Mobile / nagrywanie w tle** — czy w zakresie web MVP, czy później.
 
